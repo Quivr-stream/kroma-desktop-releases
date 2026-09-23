@@ -1,0 +1,89 @@
+name: Build Kroma Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Private kroma-desktop branch, tag, or commit
+        required: true
+        default: main
+      prerelease:
+        description: Publish as a prerelease
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kroma-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-2025
+            rust-target: x86_64-pc-windows-msvc
+            args: ""
+          - name: macOS Apple Silicon
+            os: macos-15
+            rust-target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - name: macOS Intel
+            os: macos-15-intel
+            rust-target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out private source
+        uses: actions/checkout@v4
+        with:
+          repository: Quivr-stream/kroma-desktop
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.KROMA_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install and verify
+        run: |
+          npm ci
+          npm run typecheck -w @kroma/desktop
+
+      - name: Build and publish native bundle
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npm run tauri
+          owner: Quivr-stream
+          repo: kroma-desktop-releases
+          releaseCommitish: main
+          tagName: v__VERSION__
+          releaseName: Kroma Desktop __VERSION__
+          releaseBody: Native Kroma Desktop for Windows and macOS. Connected exclusively through Quivr.
+          releaseDraft: false
+          prerelease: ${{ inputs.prerelease }}
+          uploadUpdaterJson: false
+          retryAttempts: 2
+          releaseAssetNamePattern: Kroma-Desktop-[version]-[platform]-[arch][setup].[ext]
+          args: ${{ matrix.args }}
