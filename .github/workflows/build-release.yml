@@ -126,5 +126,8 @@ jobs:
         with:
           script: |
             const tag = `v${process.env.RELEASE_VERSION}`;
-            const { data: release } = await github.rest.repos.getReleaseByTag({ owner: context.repo.owner, repo: context.repo.repo, tag });
+            // Drafts can exist before their Git tag does; getReleaseByTag returns 404 then.
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 });
+            const release = releases.find(release => release.tag_name === tag && release.draft);
+            if (!release) throw new Error(`Missing draft release ${tag}`);
             await github.rest.repos.updateRelease({ owner: context.repo.owner, repo: context.repo.repo, release_id: release.id, draft: false, prerelease: process.env.IS_PRERELEASE === 'true', make_latest: process.env.IS_PRERELEASE === 'true' ? 'false' : 'true' });
