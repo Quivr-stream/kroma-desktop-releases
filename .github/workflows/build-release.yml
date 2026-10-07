@@ -48,7 +48,8 @@ jobs:
           - name: Windows x64
             os: windows-2025
             rust-target: x86_64-pc-windows-msvc
-            args: ""
+            # MSI requires numeric prerelease identifiers; previews use our NSIS updater.
+            args: ${{ inputs.prerelease && '--bundles nsis' || '' }}
           - name: macOS Apple Silicon
             os: macos-15
             rust-target: aarch64-apple-darwin
