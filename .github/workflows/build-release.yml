@@ -20,7 +20,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      revision: ${{ steps.source.outputs.revision }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Quivr-stream/kroma-desktop
+          ref: ${{ inputs.source_ref }}
+          token: ${{ secrets.KROMA_SOURCE_TOKEN }}
+          persist-credentials: false
+      - id: source
+        name: Pin source revision and release version
+        shell: bash
+        run: |
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node -e 'const fs = require("fs"); const version = JSON.parse(fs.readFileSync("apps/desktop/src-tauri/tauri.conf.json")).version; if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) throw new Error("Invalid release version"); fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);'
   build:
+    needs: source
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -38,13 +57,17 @@ jobs:
             os: macos-15-intel
             rust-target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
+          - name: Linux x64
+            os: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            args: --bundles appimage,deb
     runs-on: ${{ matrix.os }}
     steps:
       - name: Check out private source
         uses: actions/checkout@v4
         with:
           repository: Quivr-stream/kroma-desktop
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.source.outputs.revision }}
           token: ${{ secrets.KROMA_SOURCE_TOKEN }}
           persist-credentials: false
 
@@ -57,10 +80,19 @@ jobs:
         with:
           targets: ${{ matrix.rust-target }}
 
+      - name: Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev libfuse2 xdg-utils
+
       - name: Install and verify
         run: |
           npm ci
           npm run typecheck -w @kroma/desktop
+          npm run legal:check
+
+      - name: Linux native regression tests
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
 
       - name: Build and publish native bundle
         uses: tauri-apps/tauri-action@v1
@@ -74,10 +106,25 @@ jobs:
           releaseCommitish: main
           tagName: v__VERSION__
           releaseName: Kroma Desktop __VERSION__
-          releaseBody: Native Kroma Desktop for Windows and macOS. Connected exclusively through Quivr.
-          releaseDraft: false
+          releaseBody: Native Kroma Desktop for Windows x64, macOS Intel and Apple Silicon, and Linux x64 (AppImage and Debian package). Connected exclusively through Quivr. Linux GUI runtime verification is ongoing; see the source repository Linux support notes. Preview builds do not replace the stable updater release.
+          releaseDraft: true
           prerelease: ${{ inputs.prerelease }}
           uploadUpdaterJson: false
           retryAttempts: 2
           releaseAssetNamePattern: Kroma-Desktop-[version]-[platform]-[arch][setup].[ext]
           args: ${{ matrix.args }}
+
+  publish:
+    name: Publish only after every platform succeeds
+    needs: [source, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ needs.source.outputs.version }}
+          IS_PRERELEASE: ${{ inputs.prerelease }}
+        with:
+          script: |
+            const tag = `v${process.env.RELEASE_VERSION}`;
+            const { data: release } = await github.rest.repos.getReleaseByTag({ owner: context.repo.owner, repo: context.repo.repo, tag });
+            await github.rest.repos.updateRelease({ owner: context.repo.owner, repo: context.repo.repo, release_id: release.id, draft: false, prerelease: process.env.IS_PRERELEASE === 'true', make_latest: process.env.IS_PRERELEASE === 'true' ? 'false' : 'true' });
